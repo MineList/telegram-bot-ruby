@@ -49,24 +49,16 @@ set_webhook_on_boot = true
 
 token = Rails.application.credentials.dig(:telegram, :bot_token)
 client = Telegram::Bot::Client.new(token)
+telegram_bot = TelegramBot.new(client)
 
 Rails.application.config.x.telegram_bot_client = client
+Rails.application.config.x.telegram_bot = telegram_bot
 
 if Rails.env.production?
   Rails.application.config.after_initialize do
     webhook_url = Rails.application.routes.url_helpers.telegram_webhook_url(host: "https://example.com")
     secret_token = Rails.application.credentials.dig(:telegram, :webhook_secret_token)
-
-    info = client.api.get_webhook_info
-
-    if info.url != webhook_url
-      params = { url: webhook_url }
-      params[:secret_token] = secret_token if secret_token.present?
-
-      client.api.set_webhook(params)
-
-      Rails.logger.info("Telegram webhook registered: #{webhook_url}")
-    end
+    telegram_bot.ensure_webhook!(url: webhook_url, secret_token: secret_token)
   end
 end
 ```
@@ -103,8 +95,8 @@ class TelegramWebhooksController < ActionController::API
   before_action :verify_telegram_secret!, if: :telegram_secret_configured?
 
   def create
-    client = Rails.application.config.x.telegram_bot_client
-    TelegramBot.new(client).process(request.raw_post)
+    telegram_bot = Rails.application.config.x.telegram_bot
+    telegram_bot.process(request.raw_post)
 
     head :ok
   rescue StandardError => e
@@ -170,11 +162,22 @@ class TelegramBot
     @client = client
   end
 
+  def ensure_webhook!(url:, secret_token: nil)
+    return if webhook_info.url == url
+
+    register_webhook(url:, secret_token:)
+    Rails.logger.info("Telegram webhook registered: #{url}")
+  end
+
   def process(raw_payload)
     payload = JSON.parse(raw_payload)
     update = Telegram::Bot::Types::Update.new(payload)
 
-    case (event = update.current_message)
+    process_event(update.current_message)
+  end
+
+  def process_event(event)
+    case event
     when Telegram::Bot::Types::Message
       process_message(event)
     when Telegram::Bot::Types::CallbackQuery
@@ -185,6 +188,16 @@ class TelegramBot
   private
 
   attr_reader :client
+
+  def webhook_info
+    client.api.get_webhook_info
+  end
+
+  def register_webhook(url:, secret_token: nil)
+    params = { url: url }
+    params[:secret_token] = secret_token if secret_token.present?
+    client.api.set_webhook(params)
+  end
 
   def process_message(message)
     case message.text
@@ -278,7 +291,8 @@ polling과 webhook을 동시에 운영하는 것은 Telegram 정책상 불가능
 4. `secret_token`을 설정한 경우 secret이 틀리면 `401`을 반환하는지
 5. `secret_token`을 사용하지 않는 경우 secret 헤더 없이도 `200`을 반환하는지
 6. malformed JSON이면 `400`을 반환하는지
-7. `TelegramBot#process`가 raw payload를 파싱해 기존 메시지 로직을 그대로 수행하는지
+7. `TelegramBot#ensure_webhook!`가 내부적으로 webhook 조회와 등록을 올바르게 수행하는지
+8. `TelegramBot#process`가 raw payload를 파싱해 기존 메시지 로직을 그대로 수행하는지
 
 예시 request spec 형태:
 
