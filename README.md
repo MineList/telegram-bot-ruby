@@ -85,7 +85,8 @@ end
 If you are going to use [webhooks](https://core.telegram.org/bots/api#setwebhook)
 instead of [long polling](https://core.telegram.org/bots/api#getupdates),
 you need to implement your own webhook callbacks server.
-Take a look at [this repo](https://github.com/solyaris/BOTServer) as an example.
+See [webhook.md](webhook.md) for a Rails integration guide.
+You can also take a look at [BOTServer](https://github.com/solyaris/BOTServer) as a Rack-based example.
 
 ## Proxy
 
