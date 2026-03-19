@@ -21,7 +21,7 @@
 
 - bot token
 - webhook URL
-- webhook secret token
+- webhook secret token (선택)
 - 부팅 시 webhook 등록 여부
 
 예시:
@@ -35,7 +35,7 @@ set_webhook_on_boot = true
 ```
 
 - webhook URL은 Telegram이 실제로 호출할 공개 HTTPS URL이어야 합니다.
-- webhook secret token은 요청 헤더 `X-Telegram-Bot-Api-Secret-Token` 검증에 사용합니다.
+- webhook secret token은 선택값입니다. 설정하면 요청 헤더 `X-Telegram-Bot-Api-Secret-Token` 검증에 사용할 수 있습니다.
 - 부팅 시 webhook 등록 여부는 앱 부팅 시 등록 로직을 실행할지 결정합니다.
 
 ## 2. Initializer에서 client 생성과 webhook 등록
@@ -60,10 +60,10 @@ if Rails.env.production?
     info = client.api.get_webhook_info
 
     if info.url != webhook_url
-      client.api.set_webhook(
-        url: webhook_url,
-        secret_token: secret_token
-      )
+      params = { url: webhook_url }
+      params[:secret_token] = secret_token if secret_token.present?
+
+      client.api.set_webhook(params)
 
       Rails.logger.info("Telegram webhook registered: #{webhook_url}")
     end
@@ -73,6 +73,7 @@ end
 
 주의할 점:
 
+- `secret_token`은 선택값이므로 아예 사용하지 않아도 webhook은 동작합니다.
 - `getWebhookInfo`는 secret token 자체를 돌려주지 않으므로 URL만 비교해서는 secret 변경을 감지할 수 없습니다.
 - secret만 바뀌었다면 `delete_webhook` 후 다시 `set_webhook`을 호출하거나, 배포 시점에 수동으로 다시 등록해야 합니다.
 - 부팅 시 외부 HTTP 호출이 부담스럽다면 같은 코드를 initializer가 아니라 deploy task나 rake task로 옮겨도 됩니다.
@@ -99,7 +100,7 @@ end
 # frozen_string_literal: true
 
 class TelegramWebhooksController < ActionController::API
-  before_action :verify_telegram_secret!
+  before_action :verify_telegram_secret!, if: :telegram_secret_configured?
 
   def create
     client = Rails.application.config.x.telegram_bot_client
@@ -127,6 +128,10 @@ class TelegramWebhooksController < ActionController::API
 
     head :unauthorized unless ActiveSupport::SecurityUtils.secure_compare(actual.to_s, expected)
   end
+
+  def telegram_secret_configured?
+    Rails.application.credentials.dig(:telegram, :webhook_secret_token).present?
+  end
 end
 ```
 
@@ -140,7 +145,7 @@ controller 내부 처리 순서는 이 정도로 고정하는 편이 좋습니�
 
 에러 처리 기본 정책:
 
-- 잘못된 secret: `401 Unauthorized`
+- 잘못된 secret: `401 Unauthorized` (`secret_token`을 사용하는 경우)
 - 잘못된 JSON: `400 Bad Request`
 - 내부 예외: `500 Internal Server Error`
 
@@ -269,10 +274,11 @@ polling과 webhook을 동시에 운영하는 것은 Telegram 정책상 불가능
 
 1. initializer의 등록 로직이 현재 webhook URL과 원하는 URL이 같으면 `set_webhook`을 호출하지 않는지
 2. URL이 다를 때만 `set_webhook`을 호출하는지
-3. 올바른 secret과 유효한 payload로 request를 보내면 `200`을 반환하는지
-4. secret이 틀리면 `401`을 반환하는지
-5. malformed JSON이면 `400`을 반환하는지
-6. `TelegramBot#process`가 raw payload를 파싱해 기존 메시지 로직을 그대로 수행하는지
+3. `secret_token`을 설정한 경우 올바른 secret과 유효한 payload로 request를 보내면 `200`을 반환하는지
+4. `secret_token`을 설정한 경우 secret이 틀리면 `401`을 반환하는지
+5. `secret_token`을 사용하지 않는 경우 secret 헤더 없이도 `200`을 반환하는지
+6. malformed JSON이면 `400`을 반환하는지
+7. `TelegramBot#process`가 raw payload를 파싱해 기존 메시지 로직을 그대로 수행하는지
 
 예시 request spec 형태:
 
